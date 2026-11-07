@@ -299,6 +299,7 @@ function route() {
   if (h === '#/' || h === '#') return teacherHome();
   if (h === '#/classes') return classList();
   if ((m = h.match(/^#\/class\/([0-9a-f-]{36})$/))) return classPage(m[1]);
+  if ((m = h.match(/^#\/class\/([0-9a-f-]{36})\/results\/([0-9a-f-]{36})$/))) return resultsPage(m[1], m[2]);
   if (h === '#/lessons') return lessonList();
   if ((m = h.match(/^#\/lesson\/([0-9a-f-]{36})$/))) return lessonEditor(m[1]);
   teacherHome();
@@ -400,7 +401,8 @@ async function classPage(id) {
   const asgHtml = asgList.length
     ? asgList.map(a => `<div class="row"><div><b>${esc(a.lessons?.title || 'Bài học')}</b>
         <div class="muted small">${a.open_at ? 'Mở: ' + esc(fmtDT(a.open_at)) + ' · ' : ''}${a.due_at ? 'Hạn: ' + esc(fmtDT(a.due_at)) : 'Không đặt hạn'}</div></div>
-        <button class="link danger small" data-unasg="${a.id}">Gỡ bài</button></div>`).join('')
+        <span><a class="btn sm ghost" href="#/class/${id}/results/${a.lesson_id}">Kết quả</a> &nbsp;
+        <button class="link danger small" data-unasg="${a.id}">Gỡ bài</button></span></div>`).join('')
     : '<p class="muted">Chưa giao bài nào. Bấm "Giao bài" để chọn bài học cho lớp.</p>';
   const list = (rows || []).filter(r => r.profiles)
     .sort((a, b) => lastWord(a.profiles.full_name).localeCompare(lastWord(b.profiles.full_name), 'vi') ||
@@ -411,7 +413,8 @@ async function classPage(id) {
         <tbody>${list.map((r, i) => `<tr>
           <td>${i + 1}</td><td>${esc(r.profiles.full_name)}</td>
           <td class="code">${esc(r.profiles.username || '')}</td>
-          <td><button class="link danger small" data-rm="${r.student_id}">Xóa khỏi lớp</button></td></tr>`).join('')}</tbody></table></div>`
+          <td style="white-space:nowrap"><button class="link small" data-pw="${r.student_id}" data-name="${esc(r.profiles.full_name)}" data-user="${esc(r.profiles.username || '')}">Đặt lại mật khẩu</button> &nbsp;
+            <button class="link danger small" data-rm="${r.student_id}">Xóa khỏi lớp</button></td></tr>`).join('')}</tbody></table></div>`
     : `<div class="empty"><h2>Lớp chưa có học sinh</h2>
         <p class="muted">Dán danh sách hoặc tải file Excel để tạo tài khoản hàng loạt.</p>
         <button class="btn" id="imp2">Thêm học sinh</button></div>`;
@@ -433,6 +436,7 @@ async function classPage(id) {
   }));
   $('#imp')?.addEventListener('click', () => importModal(cls, () => classPage(id)));
   $('#imp2')?.addEventListener('click', () => importModal(cls, () => classPage(id)));
+  $$('[data-pw]').forEach(b => b.addEventListener('click', () => resetPwModal(b.dataset.pw, b.dataset.name, b.dataset.user)));
   $$('[data-rm]').forEach(b => b.addEventListener('click', async () => {
     if (!confirm('Xóa học sinh này khỏi lớp? Tài khoản vẫn còn, chỉ bị gỡ khỏi lớp.')) return;
     const { error } = await sb.from('enrollments').delete().match({ class_id: id, student_id: b.dataset.rm });
@@ -974,6 +978,116 @@ async function assignModal(cls, asgList, onDone) {
     });
     if (error) { $('#e', m.el).textContent = viErr(error.message); $('#go', m.el).disabled = false; return; }
     m.close(); onDone();
+  });
+}
+
+/* =====================================================
+   GIÁO VIÊN: ĐẶT LẠI MẬT KHẨU HỌC SINH
+   ===================================================== */
+function resetPwModal(sid, name, user) {
+  const m = modal(`
+    <h2>Đặt lại mật khẩu</h2>
+    <p>Học sinh: <b>${esc(name)}</b> (tên đăng nhập <span class="code">${esc(user)}</span>)</p>
+    <form id="f">
+      <label>Mật khẩu mới (từ 6 ký tự)<input id="pw" required minlength="6" value="${Math.floor(100000 + Math.random() * 900000)}"></label>
+      <p class="err" id="e"></p>
+      <div class="actions"><button type="button" class="btn ghost" data-close>Hủy</button><button class="btn" id="go">Đặt lại</button></div>
+    </form>`);
+  $('#f', m.el).addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const pw = $('#pw', m.el).value.trim();
+    $('#go', m.el).disabled = true;
+    const { error } = await sb.rpc('reset_student_password', { p_student: sid, p_password: pw });
+    if (error) {
+      const msg = /could not find the function|schema cache/i.test(error.message)
+        ? 'Chưa chạy file SQL cập nhật 2 (lms-toan-update-2.sql) trong Supabase.' : viErr(error.message);
+      $('#e', m.el).textContent = msg; $('#go', m.el).disabled = false; return;
+    }
+    $('.modal', m.el).innerHTML = `<h2>Đã đặt lại mật khẩu</h2>
+      <p><b>${esc(name)}</b> đăng nhập bằng:</p>
+      <p>Tên đăng nhập: <span class="code">${esc(user)}</span><br>Mật khẩu: <span class="code" style="font-size:22px">${esc(pw)}</span></p>
+      <p class="muted small">Hãy ghi lại ngay, mật khẩu không xem lại được.</p>
+      <div class="actions"><button class="btn" data-close>Xong</button></div>`;
+    $('[data-close]', m.el).addEventListener('click', m.close);
+  });
+}
+
+/* =====================================================
+   GIÁO VIÊN: KẾT QUẢ CỦA LỚP THEO BÀI
+   ===================================================== */
+const to10 = (s, mx) => mx > 0 ? (Math.round(s / mx * 100) / 10).toLocaleString('vi-VN') : '0';
+
+async function resultsPage(cid, lid) {
+  shell('classes', loading());
+  const [c, l, r, q, rp] = await Promise.all([
+    sb.from('classes').select('id, name').eq('id', cid).single(),
+    sb.from('lessons').select('id, title').eq('id', lid).single(),
+    sb.rpc('class_lesson_results', { p_class: cid, p_lesson: lid }),
+    sb.rpc('class_question_stats', { p_class: cid, p_lesson: lid }),
+    sb.rpc('class_replay_stats', { p_class: cid, p_lesson: lid })
+  ]);
+  const fail = r.error || q.error;
+  if (c.error || l.error || fail) {
+    const msg = fail && /could not find the function|schema cache/i.test(fail.message)
+      ? 'Bạn chưa chạy file SQL cập nhật 2. Mở file lms-toan-update-2.sql, dán vào Supabase → SQL Editor → Run, rồi tải lại trang.'
+      : viErr((fail || c.error || l.error).message);
+    $('.main').innerHTML = `<p class="small"><a href="#/class/${cid}">← Quay lại lớp</a></p><p class="err">${esc(msg)}</p>`;
+    return;
+  }
+  const rows = (r.data || []).slice().sort((a, b) => lastWord(a.full_name).localeCompare(lastWord(b.full_name), 'vi') || a.full_name.localeCompare(b.full_name, 'vi'));
+  const done = rows.filter(x => x.best_score !== null);
+  const avg = done.length ? done.reduce((s, x) => s + x.best_score / (x.best_max || 1) * 10, 0) / done.length : null;
+  const qs = (q.data || []).slice();
+  const hot = rp.data || [];
+
+  const studentRows = rows.map((x, i) => `<tr>
+      <td>${i + 1}</td><td>${esc(x.full_name)}</td>
+      <td>${x.attempts || 0}</td>
+      ${x.best_score === null
+        ? '<td colspan="3" class="muted">Chưa nộp bài</td>'
+        : `<td><b>${to10(x.best_score, x.best_max)}</b>/10 <span class="muted small">(${esc(x.best_score)}/${esc(x.best_max)})</span></td>
+           <td>${x.best_correct}/${x.best_answered} câu đúng</td><td>${fmtT(x.best_duration_sec)}</td>`}
+      <td class="small muted">${x.last_at ? esc(fmtDT(x.last_at)) : ''}</td></tr>`).join('');
+
+  const qRows = qs.slice().sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101)).map(x => `<tr>
+      <td><span class="tag">${fmtT(x.show_at_second)}</span></td>
+      <td class="mathy">${esc(String(x.content).length > 90 ? String(x.content).slice(0, 90) + '…' : x.content)}</td>
+      <td class="${x.pct !== null && x.pct < 50 ? 'bad' : ''}"><b>${x.pct === null ? '–' : x.pct + '%'}</b> <span class="muted small">(${x.correct}/${x.total})</span></td>
+      <td>${x.avg_time === null ? '–' : Math.round(x.avg_time) + ' giây'}</td></tr>`).join('');
+
+  $('.main').innerHTML = `
+    <p class="small"><a href="#/class/${cid}">← ${esc(c.data.name)}</a></p>
+    <div class="head"><div><h1>Kết quả: ${esc(l.data.title)}</h1><p class="muted">${esc(c.data.name)}</p></div>
+      <button class="btn ghost" id="xl">Tải Excel</button></div>
+    <div class="stats">
+      <div class="card stat"><span class="muted small">Đã nộp bài</span><b>${done.length}/${rows.length}</b></div>
+      <div class="card stat"><span class="muted small">Điểm trung bình (thang 10)</span><b>${avg === null ? '–' : (Math.round(avg * 10) / 10).toLocaleString('vi-VN')}</b></div>
+      <div class="card stat"><span class="muted small">Chưa làm</span><b>${rows.length - done.length}</b></div>
+    </div>
+    <div class="card" style="margin-bottom:16px"><h2>Từng học sinh</h2>
+      ${rows.length ? `<div class="tablewrap"><table>
+        <thead><tr><th>#</th><th>Họ và tên</th><th>Số lần nộp</th><th>Điểm cao nhất</th><th>Kết quả</th><th>Thời gian</th><th>Lần cuối</th></tr></thead>
+        <tbody>${studentRows}</tbody></table></div>` : '<p class="muted">Lớp chưa có học sinh.</p>'}
+    </div>
+    <div class="card" style="margin-bottom:16px"><h2>Câu hỏi (xếp từ câu nhiều em sai nhất)</h2>
+      ${qs.length ? `<div class="tablewrap"><table>
+        <thead><tr><th>Hiện lúc</th><th>Nội dung</th><th>Tỉ lệ đúng</th><th>Thời gian TB</th></tr></thead><tbody>${qRows}</tbody></table></div>`
+        : '<p class="muted">Bài chưa có câu hỏi.</p>'}
+    </div>
+    <div class="card"><h2>Đoạn video học sinh xem lại nhiều</h2>
+      ${hot.length ? hot.map(h => `<div class="row"><b>${fmtT(h.bucket_start)} – ${fmtT(h.bucket_start + 30)}</b><span>${h.n} lượt xem lại</span></div>`).join('')
+        : '<p class="muted">Chưa có học sinh nào bấm "Xem lại". Khi có, đây là đoạn bạn nên giảng kỹ hơn.</p>'}
+    </div>`;
+  math($('.main'));
+  $('#xl').addEventListener('click', () => {
+    const head = ['Họ và tên', 'Tên đăng nhập', 'Số lần nộp', 'Điểm (thang 10)', 'Điểm', 'Điểm tối đa', 'Số câu đúng', 'Số câu đã trả lời', 'Thời gian làm (giây)', 'Lần cuối'];
+    const body = rows.map(x => [x.full_name, x.username || '', x.attempts || 0,
+      x.best_score === null ? '' : Math.round(x.best_score / (x.best_max || 1) * 100) / 10,
+      x.best_score ?? '', x.best_max ?? '', x.best_correct ?? '', x.best_answered ?? '', x.best_duration_sec ?? '',
+      x.last_at ? fmtDT(x.last_at) : '']);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([head, ...body]), 'Kết quả');
+    XLSX.writeFile(wb, 'ket-qua-' + (slug(c.data.name) || 'lop') + '-' + (slug(l.data.title).slice(0, 30) || 'bai') + '.xlsx');
   });
 }
 
