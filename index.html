@@ -9,6 +9,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
 <style>
 :root{
   --bg:#f5f7fb; --card:#ffffff; --text:#14213d; --muted:#586174; --line:#e2e7ef;
@@ -102,6 +105,28 @@ td.good{color:var(--ok)}
 .login .brand{padding:0;margin-bottom:18px}
 .center{min-height:60vh;display:grid;place-items:center;color:var(--muted)}
 
+[hidden]{display:none!important}
+input[type=radio],input[type=checkbox]{display:inline-block;width:auto;min-height:0;margin:3px 0 0;flex:none}
+label.opt{display:flex;align-items:flex-start;gap:10px;font-weight:400;padding:10px 12px;border:1px solid var(--line);border-radius:10px;cursor:pointer;margin-bottom:8px}
+label.opt:has(input:checked){border-color:var(--primary);background:var(--primary-soft)}
+.video{position:relative;aspect-ratio:16/9;background:#000;border-radius:14px;overflow:hidden}
+.video iframe,.video #yt{position:absolute;inset:0;width:100%;height:100%}
+.bar{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:12px 0}
+.qcard{border:2px solid var(--primary);margin:12px 0}
+.mathy{white-space:pre-wrap}
+.fb{padding:10px 14px;border-radius:10px;margin:12px 0;font-weight:600}
+.fb.ok{background:var(--ok-soft);color:var(--ok)}
+.fb.bad{background:var(--danger-soft);color:var(--danger)}
+.pdf{margin-top:12px;height:70vh;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.pdf iframe{width:100%;height:100%;border:0;margin:0;min-height:0}
+.row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.tfrow{display:grid;grid-template-columns:1fr auto;gap:8px 12px;align-items:center;margin-bottom:10px}
+.tfopts{display:flex;gap:8px}
+.tfopts label.opt{margin:0;padding:6px 12px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.qitem{padding:14px 0;border-bottom:1px solid var(--line)}
+.qitem:last-child{border-bottom:0}
 @media (max-width:820px){
   .shell{grid-template-columns:1fr}
   .side{display:none}
@@ -164,6 +189,7 @@ function modal(html) {
    ===================================================== */
 let sb = null;
 let me = null;
+let teardown = null;   // dọn dẹp khi rời trang (dừng video, hẹn giờ)
 
 if (!window.supabase) {
   app.innerHTML = '<div class="center">Không tải được thư viện Supabase. Kiểm tra kết nối mạng.</div>';
@@ -235,7 +261,7 @@ function renderLogin(msg = '') {
 function shell(active, inner) {
   const teacher = me.role === 'teacher';
   const items = teacher
-    ? [['home', '#/', 'Trang chủ'], ['classes', '#/classes', 'Lớp học']]
+    ? [['home', '#/', 'Trang chủ'], ['classes', '#/classes', 'Lớp học'], ['lessons', '#/lessons', 'Bài học']]
     : [['home', '#/', 'Lớp của tôi']];
   const links = items.map(([k, h, t]) => `<a href="${h}" class="${active === k ? 'on' : ''}">${t}</a>`).join('');
   app.innerHTML = `
@@ -263,12 +289,18 @@ const loading = () => '<div class="center">Đang tải…</div>';
    ===================================================== */
 function route() {
   if (!me) return;
+  if (teardown) { try { teardown(); } catch (e) {} teardown = null; }
   const h = location.hash || '#/';
-  if (me.role !== 'teacher') return studentHome();
   let m;
+  if (me.role !== 'teacher') {
+    if ((m = h.match(/^#\/learn\/([0-9a-f-]{36})\/([0-9a-f-]{36})$/))) return learnPage(m[1], m[2]);
+    return studentHome();
+  }
   if (h === '#/' || h === '#') return teacherHome();
   if (h === '#/classes') return classList();
   if ((m = h.match(/^#\/class\/([0-9a-f-]{36})$/))) return classPage(m[1]);
+  if (h === '#/lessons') return lessonList();
+  if ((m = h.match(/^#\/lesson\/([0-9a-f-]{36})$/))) return lessonEditor(m[1]);
   teacherHome();
 }
 
@@ -277,11 +309,13 @@ function route() {
    ===================================================== */
 async function teacherHome() {
   shell('home', loading());
-  const [c, s] = await Promise.all([
+  const [c, s, l, a] = await Promise.all([
     sb.from('classes').select('id', { count: 'exact', head: true }),
-    sb.from('enrollments').select('student_id', { count: 'exact', head: true })
+    sb.from('enrollments').select('student_id', { count: 'exact', head: true }),
+    sb.from('lessons').select('id', { count: 'exact', head: true }),
+    sb.from('class_lessons').select('id', { count: 'exact', head: true })
   ]);
-  const nClass = c.count || 0, nStu = s.count || 0;
+  const nClass = c.count || 0, nStu = s.count || 0, nLes = l.count || 0, nAsg = a.count || 0;
   const done = ok => `<span class="dot ${ok ? 'done' : ''}">${ok ? '✓' : ''}</span>`;
   $('.main').innerHTML = `
     <div class="head">
@@ -291,13 +325,15 @@ async function teacherHome() {
     <div class="stats">
       <div class="card stat"><span class="muted small">Lớp học</span><b>${nClass}</b></div>
       <div class="card stat"><span class="muted small">Học sinh</span><b>${nStu}</b></div>
+      <div class="card stat"><span class="muted small">Bài học</span><b>${nLes}</b></div>
     </div>
     <div class="card">
       <h2>Bắt đầu</h2>
       <ul class="steps">
         <li>${done(nClass > 0)}<div><b>Tạo lớp học</b><div class="muted small">Đặt tên lớp và khối.</div></div></li>
         <li>${done(nStu > 0)}<div><b>Thêm học sinh</b><div class="muted small">Dán danh sách hoặc tải file Excel, hệ thống tự tạo tên đăng nhập và mật khẩu.</div></div></li>
-        <li>${done(false)}<div><b>Tạo bài học có video và câu hỏi</b><div class="muted small">Sẽ làm ở bước tiếp theo.</div></div></li>
+        <li>${done(nLes > 0)}<div><b><a href="#/lessons">Tạo bài học có video và câu hỏi</a></b><div class="muted small">Gắn video YouTube, PDF và câu hỏi hiện đúng giây.</div></div></li>
+        <li>${done(nAsg > 0)}<div><b>Giao bài cho lớp</b><div class="muted small">Vào lớp học, bấm "Giao bài".</div></div></li>
       </ul>
     </div>`;
   $('#newClass').addEventListener('click', newClassModal);
@@ -358,6 +394,14 @@ async function classPage(id) {
   if (error || !cls) { $('.main').innerHTML = '<div class="card empty"><h2>Không tìm thấy lớp</h2><a href="#/classes">Quay lại</a></div>'; return; }
   const { data: rows } = await sb.from('enrollments')
     .select('student_id, joined_at, profiles(full_name, username)').eq('class_id', id);
+  const { data: asg } = await sb.from('class_lessons')
+    .select('id, lesson_id, position, open_at, due_at, lessons(title)').eq('class_id', id).order('position');
+  const asgList = asg || [];
+  const asgHtml = asgList.length
+    ? asgList.map(a => `<div class="row"><div><b>${esc(a.lessons?.title || 'Bài học')}</b>
+        <div class="muted small">${a.open_at ? 'Mở: ' + esc(fmtDT(a.open_at)) + ' · ' : ''}${a.due_at ? 'Hạn: ' + esc(fmtDT(a.due_at)) : 'Không đặt hạn'}</div></div>
+        <button class="link danger small" data-unasg="${a.id}">Gỡ bài</button></div>`).join('')
+    : '<p class="muted">Chưa giao bài nào. Bấm "Giao bài" để chọn bài học cho lớp.</p>';
   const list = (rows || []).filter(r => r.profiles)
     .sort((a, b) => lastWord(a.profiles.full_name).localeCompare(lastWord(b.profiles.full_name), 'vi') ||
                     a.profiles.full_name.localeCompare(b.profiles.full_name, 'vi'));
@@ -378,7 +422,15 @@ async function classPage(id) {
         <span class="muted small"> · ${list.length} học sinh</span></div>
       ${list.length ? '<button class="btn" id="imp">Thêm học sinh</button>' : ''}
     </div>
-    <div class="card">${table}</div>`;
+    <div class="card" style="margin-bottom:16px"><div class="head" style="margin-bottom:4px"><h2 style="margin:0">Bài học đã giao</h2>
+      <button class="btn sm" id="asg">Giao bài</button></div>${asgHtml}</div>
+    <div class="card"><h2>Học sinh</h2>${table}</div>`;
+  $('#asg').addEventListener('click', () => assignModal(cls, asgList, () => classPage(id)));
+  $$('[data-unasg]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Gỡ bài này khỏi lớp? Kết quả học sinh đã làm vẫn được giữ.')) return;
+    const { error } = await sb.from('class_lessons').delete().eq('id', b.dataset.unasg);
+    if (error) alert(viErr(error.message)); else classPage(id);
+  }));
   $('#imp')?.addEventListener('click', () => importModal(cls, () => classPage(id)));
   $('#imp2')?.addEventListener('click', () => importModal(cls, () => classPage(id)));
   $$('[data-rm]').forEach(b => b.addEventListener('click', async () => {
@@ -528,13 +580,560 @@ async function studentHome() {
   shell('home', loading());
   const { data, error } = await sb.from('enrollments').select('class_id, classes(name, grade)').eq('student_id', me.id);
   const list = (data || []).filter(r => r.classes);
+  const ids = list.map(r => r.class_id);
+  let asg = [], att = [];
+  if (ids.length) {
+    const [a, b] = await Promise.all([
+      sb.from('class_lessons').select('class_id, lesson_id, position, open_at, due_at, lessons(title, chapter)').in('class_id', ids).order('position'),
+      sb.from('attempts').select('class_id, lesson_id, score, max_score').eq('student_id', me.id).not('submitted_at', 'is', null)
+    ]);
+    asg = a.data || []; att = b.data || [];
+  }
+  const best = (c, l) => att.filter(x => x.class_id === c && x.lesson_id === l).sort((x, y) => y.score - x.score)[0];
+  const lessonRow = (cid, a) => {
+    const b = best(cid, a.lesson_id);
+    const due = a.due_at ? `<span class="muted small"> · Hạn: ${esc(fmtDT(a.due_at))}</span>` : '';
+    if (!a.lessons) return `<div class="row"><div><b>Bài chưa mở</b><div class="muted small">${a.open_at ? 'Mở lúc ' + esc(fmtDT(a.open_at)) : ''}</div></div></div>`;
+    return `<div class="row"><div><b>${esc(a.lessons.title)}</b>${due}
+        <div class="small ${b ? 'good' : 'muted'}">${b ? 'Điểm cao nhất: ' + esc(b.score) + '/' + esc(b.max_score) : 'Chưa làm'}</div></div>
+        <a class="btn sm ${b ? 'ghost' : ''}" href="#/learn/${cid}/${a.lesson_id}">${b ? 'Học lại' : 'Vào học'}</a></div>`;
+  };
   $('.main').innerHTML = `
-    <div class="head"><div><h1>Xin chào, ${esc(me.full_name)}</h1><p class="muted">Lớp học của bạn.</p></div></div>
+    <div class="head"><div><h1>Xin chào, ${esc(me.full_name)}</h1><p class="muted">Bài học của bạn.</p></div></div>
     ${error ? `<p class="err">${esc(viErr(error.message))}</p>` : ''}
     ${list.length
-      ? `<div class="grid">${list.map(r => `<div class="card"><span class="tag">Khối ${esc(r.classes.grade ?? '?')}</span>
-          <h2 style="margin-top:10px">${esc(r.classes.name)}</h2><span class="muted small">Bài học sẽ hiện ở đây.</span></div>`).join('')}</div>`
+      ? list.map(r => {
+          const rows = asg.filter(a => a.class_id === r.class_id);
+          return `<div class="card" style="margin-bottom:16px"><span class="tag">Khối ${esc(r.classes.grade ?? '?')}</span>
+            <h2 style="margin-top:10px">${esc(r.classes.name)}</h2>
+            ${rows.length ? rows.map(a => lessonRow(r.class_id, a)).join('') : '<p class="muted">Giáo viên chưa giao bài nào.</p>'}</div>`;
+        }).join('')
       : `<div class="card empty"><h2>Bạn chưa thuộc lớp nào</h2><p class="muted">Hãy báo giáo viên thêm bạn vào lớp.</p></div>`}`;
+}
+/* =====================================================
+   BÀI HỌC — TIỆN ÍCH
+   ===================================================== */
+const ytId = s => {
+  s = String(s || '').trim(); if (!s) return '';
+  const m = s.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  return /^[A-Za-z0-9_-]{11}$/.test(s) ? s : '';
+};
+const safeUrl = u => /^https?:\/\//i.test(String(u || '').trim()) ? String(u).trim() : '';
+const pdfEmbed = u => {
+  u = safeUrl(u);
+  const m = u.match(/drive\.google\.com\/file\/d\/([^/?#]+)/);
+  return m ? `https://drive.google.com/file/d/${m[1]}/preview` : u;
+};
+const fmtT = s => { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const parseT = v => {
+  v = String(v).trim();
+  if (/^\d+$/.test(v)) return +v;
+  const m = v.match(/^(\d+):(\d{1,2})$/);
+  return m ? (+m[1]) * 60 + (+m[2]) : null;
+};
+const fmtDT = d => d ? new Date(d).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' }) : '';
+const TYPE_NAME = { mcq: 'Trắc nghiệm', true_false: 'Đúng/Sai', short: 'Trả lời ngắn' };
+
+function math(el) {
+  if (!window.renderMathInElement || !el) return;
+  try { renderMathInElement(el, { delimiters: [{ left: '$$', right: '$$', display: true }, { left: '$', right: '$', display: false }], throwOnError: false }); } catch (e) {}
+}
+
+let ytReady = null;
+function loadYT() {
+  if (ytReady) return ytReady;
+  ytReady = new Promise(res => {
+    if (window.YT && window.YT.Player) return res();
+    window.onYouTubeIframeAPIReady = () => res();
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(s);
+  });
+  return ytReady;
+}
+function makePlayer(elId, vid, onState) {
+  return loadYT().then(() => new Promise(res => {
+    const p = new YT.Player(elId, {
+      videoId: vid, width: '100%', height: '100%',
+      playerVars: { rel: 0, modestbranding: 1, playsinline: 1 },
+      events: { onReady: () => res(p), onStateChange: e => onState && onState(e.data) }
+    });
+  }));
+}
+
+/* =====================================================
+   GIÁO VIÊN: DANH SÁCH BÀI HỌC
+   ===================================================== */
+async function lessonList() {
+  shell('lessons', loading());
+  const { data, error } = await sb.from('lessons').select('*, questions(count)').order('created_at', { ascending: false });
+  if (error) { $('.main').innerHTML = `<p class="err">${esc(viErr(error.message))}</p>`; return; }
+  const body = data.length
+    ? `<div class="grid">${data.map(l => `
+        <a class="card link-card" href="#/lesson/${l.id}">
+          <span class="tag">Khối ${esc(l.grade ?? '?')}</span>
+          <h2 style="margin-top:10px">${esc(l.title)}</h2>
+          <div class="muted small">${esc(l.chapter || '')}</div>
+          <div class="muted small">${l.questions?.[0]?.count ?? 0} câu hỏi · ${l.youtube_id ? 'Có video' : 'Chưa có video'}</div>
+        </a>`).join('')}</div>`
+    : `<div class="card empty"><h2>Chưa có bài học nào</h2>
+        <p class="muted">Tạo bài học, gắn video YouTube rồi thêm câu hỏi hiện đúng giây.</p>
+        <button class="btn" id="newLesson2">Tạo bài học đầu tiên</button></div>`;
+  $('.main').innerHTML = `
+    <div class="head"><div><h1>Bài học</h1></div>${data.length ? '<button class="btn" id="newLesson">Tạo bài học</button>' : ''}</div>${body}`;
+  $('#newLesson')?.addEventListener('click', newLessonModal);
+  $('#newLesson2')?.addEventListener('click', newLessonModal);
+}
+
+function newLessonModal() {
+  const m = modal(`
+    <h2>Tạo bài học</h2>
+    <form id="f">
+      <label>Tên bài học<input name="title" required placeholder="Ví dụ: Bài 10. Số nguyên tố"></label>
+      <div class="g2">
+        <label>Khối<select name="grade">${[6,7,8,9,10,11,12].map(g => `<option>${g}</option>`).join('')}</select></label>
+        <label>Chương / bài<input name="chapter" placeholder="Chương I"></label>
+      </div>
+      <p class="err" id="e"></p>
+      <div class="actions"><button type="button" class="btn ghost" data-close>Hủy</button><button class="btn" id="go">Tạo</button></div>
+    </form>`);
+  $('#f', m.el).addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    $('#go', m.el).disabled = true;
+    const { data, error } = await sb.from('lessons')
+      .insert({ teacher_id: me.id, title: String(f.get('title')).trim(), grade: +f.get('grade'), chapter: String(f.get('chapter')).trim() || null })
+      .select().single();
+    if (error) { $('#e', m.el).textContent = viErr(error.message); $('#go', m.el).disabled = false; return; }
+    m.close();
+    location.hash = '#/lesson/' + data.id;
+  });
+}
+
+/* =====================================================
+   GIÁO VIÊN: SOẠN BÀI + CÂU HỎI
+   ===================================================== */
+let edPlayer = null;
+
+function answerText(q, k) {
+  if (q.type === 'mcq') { const i = 'ABCD'.indexOf(k); return k + (i >= 0 && q.options ? '. ' + q.options[i] : ''); }
+  if (q.type === 'true_false') {
+    if (Array.isArray(q.options)) return 'abcd'.split('').map(c => c + ': ' + (k && k[c] ? 'Đúng' : 'Sai')).join('  ·  ');
+    return k === true ? 'Đúng' : 'Sai';
+  }
+  return Array.isArray(k) ? k.join(' | ') : String(k ?? '');
+}
+
+async function lessonEditor(id) {
+  shell('lessons', loading());
+  const { data: les, error } = await sb.from('lessons').select('*').eq('id', id).single();
+  if (error || !les) { $('.main').innerHTML = '<div class="card empty"><h2>Không tìm thấy bài học</h2><a href="#/lessons">Quay lại</a></div>'; return; }
+  const { data: qs } = await sb.from('questions').select('*').eq('lesson_id', id)
+    .order('show_at_second', { ascending: true }).order('position');
+  const list = qs || [];
+  const keys = {};
+  if (list.length) {
+    const { data: ks } = await sb.from('question_keys').select('*').in('question_id', list.map(q => q.id));
+    (ks || []).forEach(k => keys[k.question_id] = k.correct_answer);
+  }
+  const vid = les.youtube_id;
+  const qHtml = list.length ? list.map(q => `
+    <div class="qitem">
+      <span class="tag">${fmtT(q.show_at_second)}</span>
+      <span class="muted small"> ${TYPE_NAME[q.type]} · ${esc(q.points)} điểm</span>
+      <div class="mathy qc" style="margin:6px 0">${esc(q.content)}</div>
+      <div class="small muted">Đáp án: ${esc(answerText(q, keys[q.id]))}</div>
+      <div style="margin-top:6px"><button class="link small" data-eq="${q.id}">Sửa</button> &nbsp;
+        <button class="link danger small" data-dq="${q.id}">Xóa</button></div>
+    </div>`).join('')
+    : '<p class="muted">Chưa có câu hỏi. Tua video đến đoạn muốn hỏi rồi bấm "Thêm câu hỏi".</p>';
+
+  $('.main').innerHTML = `
+    <p class="small"><a href="#/lessons">← Bài học</a></p>
+    <div class="head"><div><h1>${esc(les.title)}</h1></div></div>
+
+    <div class="card" style="margin-bottom:16px"><h2>Thông tin bài</h2>
+      <form id="info">
+        <label>Tên bài học<input name="title" required value="${esc(les.title)}"></label>
+        <div class="g2">
+          <label>Khối<select name="grade">${[6,7,8,9,10,11,12].map(g => `<option ${g === les.grade ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+          <label>Chương / bài<input name="chapter" value="${esc(les.chapter || '')}"></label>
+        </div>
+        <label>Link video YouTube (nên đăng ở chế độ Không công khai)
+          <input name="yt" value="${vid ? esc('https://youtu.be/' + vid) : ''}" placeholder="https://youtu.be/..."></label>
+        <label>Link tài liệu PDF (Google Drive: chia sẻ "Bất kỳ ai có đường liên kết")
+          <input name="pdf" value="${esc(les.pdf_url || '')}" placeholder="https://drive.google.com/file/d/..."></label>
+        <label>Mô tả ngắn<textarea name="desc">${esc(les.description || '')}</textarea></label>
+        <p class="err" id="e"></p>
+        <button class="btn" id="save">Lưu thông tin</button>
+      </form>
+    </div>
+
+    <div class="card" style="margin-bottom:16px"><h2>Video</h2>
+      ${vid ? '<div class="video"><div id="yt"></div></div><p class="muted small" style="margin-top:8px">Tua đến đoạn muốn hỏi, rồi bấm "Thêm câu hỏi": thời điểm được lấy tự động từ video.</p>'
+            : '<p class="muted">Dán link YouTube ở trên rồi bấm Lưu để xem video tại đây.</p>'}
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="head" style="margin-bottom:4px"><h2 style="margin:0">Câu hỏi (${list.length})</h2><button class="btn sm" id="addq">Thêm câu hỏi</button></div>
+      ${qHtml}
+    </div>
+    <p><button class="link danger small" id="dellesson">Xóa bài học này</button></p>`;
+  math($('.main'));
+
+  edPlayer = null;
+  teardown = () => { try { edPlayer && edPlayer.destroy(); } catch (e) {} edPlayer = null; };
+  if (vid) makePlayer('yt', vid).then(p => { edPlayer = p; }).catch(() => {});
+
+  $('#info').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const ytRaw = String(f.get('yt')).trim(), pdfRaw = String(f.get('pdf')).trim();
+    if (ytRaw && !ytId(ytRaw)) return void ($('#e').textContent = 'Link YouTube không hợp lệ.');
+    if (pdfRaw && !safeUrl(pdfRaw)) return void ($('#e').textContent = 'Link PDF phải bắt đầu bằng https://');
+    $('#save').disabled = true; $('#e').textContent = '';
+    const { error } = await sb.from('lessons').update({
+      title: String(f.get('title')).trim(), grade: +f.get('grade'), chapter: String(f.get('chapter')).trim() || null,
+      youtube_id: ytId(ytRaw) || null, pdf_url: pdfRaw || null, description: String(f.get('desc')).trim() || null
+    }).eq('id', id);
+    if (error) { $('#e').textContent = viErr(error.message); $('#save').disabled = false; return; }
+    lessonEditor(id);
+  });
+  $('#addq').addEventListener('click', () => questionModal(les, null, null, list.length, () => lessonEditor(id)));
+  $$('[data-eq]').forEach(b => b.addEventListener('click', () => {
+    const q = list.find(x => x.id === b.dataset.eq);
+    questionModal(les, q, keys[q.id], list.length, () => lessonEditor(id));
+  }));
+  $$('[data-dq]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Xóa câu hỏi này?')) return;
+    const { error } = await sb.from('questions').delete().eq('id', b.dataset.dq);
+    if (error) alert(viErr(error.message)); else lessonEditor(id);
+  }));
+  $('#dellesson').addEventListener('click', async () => {
+    if (!confirm('Xóa bài học này cùng toàn bộ câu hỏi và kết quả làm bài của học sinh? Không thể khôi phục.')) return;
+    const { error } = await sb.from('lessons').delete().eq('id', id);
+    if (error) alert(viErr(error.message)); else location.hash = '#/lessons';
+  });
+}
+
+function questionModal(les, q, key, nextPos, onDone) {
+  const edit = !!q;
+  const nowSec = edPlayer && edPlayer.getCurrentTime ? Math.round(edPlayer.getCurrentTime()) : 0;
+  q = q || { type: 'mcq', content: '', options: null, show_at_second: nowSec, points: 1, explanation: '' };
+  const m = modal(`
+    <h2>${edit ? 'Sửa' : 'Thêm'} câu hỏi</h2>
+    <form id="f">
+      <label>Dạng câu hỏi
+        <select id="type"><option value="mcq">Trắc nghiệm 4 đáp án</option><option value="true_false">Đúng / Sai</option><option value="short">Trả lời ngắn</option></select></label>
+      <label>Nội dung (công thức viết trong dấu $, ví dụ $\\frac{1}{2}$ hoặc $x^2$)
+        <textarea id="content" required></textarea></label>
+      <div class="g2">
+        <label>Hiện lúc (phút:giây)<input id="time" placeholder="1:30"></label>
+        <label>Điểm<input id="points" type="number" min="0.25" step="0.25"></label>
+      </div>
+      <div id="sec-mcq">
+        <p class="small muted">Gõ 4 đáp án và chọn nút tròn bên đáp án đúng.</p>
+        ${'ABCD'.split('').map((L, i) => `<label class="opt"><input type="radio" name="mc" value="${L}"><b>${L}.</b>
+          <input class="mco" data-i="${i}" placeholder="Đáp án ${L}" style="margin:0"></label>`).join('')}
+      </div>
+      <div id="sec-tf">
+        <label>Kiểu
+          <select id="tfmode"><option value="one">Một mệnh đề</option><option value="four">4 ý a, b, c, d</option></select></label>
+        <div id="tf-one">
+          <label class="opt"><input type="radio" name="tf1" value="true">Đúng</label>
+          <label class="opt"><input type="radio" name="tf1" value="false">Sai</label>
+        </div>
+        <div id="tf-four">
+          ${'abcd'.split('').map((c, i) => `<div class="tfrow"><input class="tfo" data-i="${i}" placeholder="Ý ${c}" style="margin:0">
+            <span class="tfopts"><label class="opt"><input type="radio" name="tf_${c}" value="true">Đ</label>
+            <label class="opt"><input type="radio" name="tf_${c}" value="false">S</label></span></div>`).join('')}
+        </div>
+      </div>
+      <div id="sec-short">
+        <label>Đáp án đúng (có nhiều cách viết thì ngăn cách bằng dấu |, ví dụ 0,5 | 1/2)<input id="short"></label>
+      </div>
+      <label>Giải thích hiện sau khi trả lời (không bắt buộc)<textarea id="expl"></textarea></label>
+      <p class="err" id="e"></p>
+      <div class="actions">
+        <button type="button" class="link" id="fromVideo" ${edPlayer ? '' : 'hidden'}>Lấy thời điểm hiện tại của video</button>
+        <button type="button" class="btn ghost" data-close>Hủy</button><button class="btn" id="go">Lưu câu hỏi</button>
+      </div>
+    </form>`);
+  const $f = s => $(s, m.el);
+  $f('#type').value = q.type;
+  $f('#content').value = q.content;
+  $f('#time').value = fmtT(q.show_at_second || 0);
+  $f('#points').value = q.points;
+  $f('#expl').value = q.explanation || '';
+  if (q.type === 'mcq' && Array.isArray(q.options)) $$('.mco', m.el).forEach(i => i.value = q.options[+i.dataset.i] || '');
+  if (q.type === 'mcq' && key) { const r = $(`input[name=mc][value="${key}"]`, m.el); if (r) r.checked = true; }
+  if (q.type === 'true_false') {
+    if (Array.isArray(q.options)) {
+      $f('#tfmode').value = 'four';
+      $$('.tfo', m.el).forEach(i => i.value = q.options[+i.dataset.i] || '');
+      'abcd'.split('').forEach(c => { const r = $(`input[name=tf_${c}][value="${key && key[c] ? 'true' : 'false'}"]`, m.el); if (r) r.checked = true; });
+    } else { const r = $(`input[name=tf1][value="${key === true}"]`, m.el); if (r && key !== undefined && key !== null) r.checked = true; }
+  }
+  if (q.type === 'short') $f('#short').value = Array.isArray(key) ? key.join(' | ') : (key ?? '');
+  const sync = () => {
+    const t = $f('#type').value, four = $f('#tfmode').value === 'four';
+    $f('#sec-mcq').hidden = t !== 'mcq'; $f('#sec-tf').hidden = t !== 'true_false'; $f('#sec-short').hidden = t !== 'short';
+    $f('#tf-one').hidden = four; $f('#tf-four').hidden = !four;
+  };
+  $f('#type').addEventListener('change', sync); $f('#tfmode').addEventListener('change', sync); sync();
+  $f('#fromVideo').addEventListener('click', () => { if (edPlayer) $f('#time').value = fmtT(edPlayer.getCurrentTime()); });
+
+  $f('#f').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const err = t => { $f('#e').textContent = t; };
+    err('');
+    const type = $f('#type').value, content = $f('#content').value.trim();
+    const t = parseT($f('#time').value), pts = parseFloat($f('#points').value);
+    if (!content) return err('Hãy nhập nội dung câu hỏi.');
+    if (t === null) return err('Thời điểm không hợp lệ (ví dụ 1:30).');
+    if (!(pts > 0)) return err('Điểm phải lớn hơn 0.');
+    let options = null, answer;
+    if (type === 'mcq') {
+      options = $$('.mco', m.el).map(i => i.value.trim());
+      if (options.some(o => !o)) return err('Hãy nhập đủ 4 đáp án.');
+      const r = $('input[name=mc]:checked', m.el);
+      if (!r) return err('Hãy chọn đáp án đúng.');
+      answer = r.value;
+    } else if (type === 'true_false') {
+      if ($f('#tfmode').value === 'four') {
+        options = $$('.tfo', m.el).map(i => i.value.trim());
+        if (options.some(o => !o)) return err('Hãy nhập đủ 4 ý a, b, c, d.');
+        answer = {};
+        for (const c of 'abcd') {
+          const r = $(`input[name=tf_${c}]:checked`, m.el);
+          if (!r) return err(`Hãy chọn Đúng/Sai cho ý ${c}.`);
+          answer[c] = r.value === 'true';
+        }
+      } else {
+        const r = $('input[name=tf1]:checked', m.el);
+        if (!r) return err('Hãy chọn Đúng hoặc Sai.');
+        answer = r.value === 'true';
+      }
+    } else {
+      const arr = $f('#short').value.split('|').map(s => s.trim()).filter(Boolean);
+      if (!arr.length) return err('Hãy nhập đáp án đúng.');
+      answer = arr.length === 1 ? arr[0] : arr;
+    }
+    $f('#go').disabled = true;
+    const row = { type, content, options, show_at_second: t, points: pts, explanation: $f('#expl').value.trim() || null };
+    let qid = q.id;
+    if (edit) {
+      const { error } = await sb.from('questions').update(row).eq('id', qid);
+      if (error) { err(viErr(error.message)); $f('#go').disabled = false; return; }
+    } else {
+      const { data, error } = await sb.from('questions').insert({ ...row, lesson_id: les.id, position: nextPos }).select().single();
+      if (error) { err(viErr(error.message)); $f('#go').disabled = false; return; }
+      qid = data.id;
+    }
+    const { error: ke } = await sb.from('question_keys').upsert({ question_id: qid, correct_answer: answer });
+    if (ke) {
+      if (!edit) await sb.from('questions').delete().eq('id', qid);
+      err(viErr(ke.message)); $f('#go').disabled = false; return;
+    }
+    m.close(); onDone();
+  });
+}
+
+/* =====================================================
+   GIÁO VIÊN: GIAO BÀI CHO LỚP
+   ===================================================== */
+async function assignModal(cls, asgList, onDone) {
+  const { data } = await sb.from('lessons').select('id, title').order('created_at', { ascending: false });
+  const taken = new Set(asgList.map(a => a.lesson_id));
+  const avail = (data || []).filter(l => !taken.has(l.id));
+  if (!avail.length) {
+    modal(`<h2>Giao bài</h2><p>Không còn bài học nào để giao. <a href="#/lessons" data-close>Tạo bài học mới</a></p>
+      <div class="actions"><button class="btn" data-close>Đóng</button></div>`);
+    return;
+  }
+  const m = modal(`
+    <h2>Giao bài cho ${esc(cls.name)}</h2>
+    <form id="f">
+      <label>Bài học<select name="lesson">${avail.map(l => `<option value="${l.id}">${esc(l.title)}</option>`).join('')}</select></label>
+      <div class="g2">
+        <label>Mở từ (tùy chọn)<input type="datetime-local" name="open"></label>
+        <label>Hạn nộp (tùy chọn)<input type="datetime-local" name="due"></label>
+      </div>
+      <p class="err" id="e"></p>
+      <div class="actions"><button type="button" class="btn ghost" data-close>Hủy</button><button class="btn" id="go">Giao bài</button></div>
+    </form>`);
+  $('#f', m.el).addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const iso = v => v ? new Date(String(v)).toISOString() : null;
+    $('#go', m.el).disabled = true;
+    const { error } = await sb.from('class_lessons').insert({
+      class_id: cls.id, lesson_id: String(f.get('lesson')), position: asgList.length,
+      open_at: iso(f.get('open')), due_at: iso(f.get('due'))
+    });
+    if (error) { $('#e', m.el).textContent = viErr(error.message); $('#go', m.el).disabled = false; return; }
+    m.close(); onDone();
+  });
+}
+
+/* =====================================================
+   HỌC SINH: HỌC BÀI (video + câu hỏi hiện đúng giây)
+   ===================================================== */
+function qFormHtml(q) {
+  if (q.type === 'mcq')
+    return 'ABCD'.split('').map((L, i) => `<label class="opt"><input type="radio" name="a" value="${L}">
+      <span><b>${L}.</b> <span class="mathy">${esc(q.options?.[i] ?? '')}</span></span></label>`).join('');
+  if (q.type === 'true_false' && Array.isArray(q.options))
+    return 'abcd'.split('').map((c, i) => `<div class="tfrow"><span class="mathy"><b>${c})</b> ${esc(q.options[i] ?? '')}</span>
+      <span class="tfopts"><label class="opt"><input type="radio" name="tf_${c}" value="true">Đúng</label>
+      <label class="opt"><input type="radio" name="tf_${c}" value="false">Sai</label></span></div>`).join('');
+  if (q.type === 'true_false')
+    return `<label class="opt"><input type="radio" name="a" value="true">Đúng</label><label class="opt"><input type="radio" name="a" value="false">Sai</label>`;
+  return `<input id="short" autocomplete="off" placeholder="Nhập đáp án"><p class="small muted">Số thập phân viết dấu phẩy hoặc dấu chấm đều được.</p>`;
+}
+function readResp(q, root) {
+  if (q.type === 'true_false' && Array.isArray(q.options)) {
+    const o = {};
+    for (const c of 'abcd') { const r = $(`input[name=tf_${c}]:checked`, root); if (!r) return null; o[c] = r.value === 'true'; }
+    return o;
+  }
+  if (q.type === 'short') { const v = $('#short', root).value.trim(); return v || null; }
+  const r = $('input[name=a]:checked', root);
+  if (!r) return null;
+  return q.type === 'true_false' ? r.value === 'true' : r.value;
+}
+
+async function learnPage(cid, lid) {
+  if (teardown) { try { teardown(); } catch (e) {} teardown = null; }
+  shell('home', loading());
+  const [{ data: les, error }, { data: qs }] = await Promise.all([
+    sb.from('lessons').select('id, title, chapter, description, pdf_url, youtube_id').eq('id', lid).single(),
+    sb.from('questions').select('id, type, content, options, show_at_second, points, position').eq('lesson_id', lid)
+      .order('show_at_second', { ascending: true }).order('position')
+  ]);
+  if (error || !les) { $('.main').innerHTML = '<div class="card empty"><h2>Bài học chưa mở hoặc không tồn tại</h2><a href="#/">Quay lại</a></div>'; return; }
+  const qlist = qs || [], total = qlist.length;
+  const maxPts = qlist.reduce((s, q) => s + Number(q.points), 0);
+  const st = { attempt: null, starting: false, answers: {}, shown: null, shownAt: 0, score: 0, finished: false, ended: false };
+  const pdf = pdfEmbed(les.pdf_url);
+
+  $('.main').innerHTML = `
+    <p class="small"><a href="#/">← Bài học của tôi</a></p>
+    <h1>${esc(les.title)}</h1><p class="muted">${esc(les.chapter || '')}</p>
+    ${les.youtube_id ? '<div class="video"><div id="yt"></div></div>' : '<div class="card"><p class="muted">Bài này chưa có video.</p></div>'}
+    <div class="bar"><span id="prog" class="muted small"></span>
+      ${total ? '<button class="btn sm ghost" id="submitAll">Nộp bài</button>' : ''}</div>
+    <div id="qbox"></div>
+    ${les.description ? `<div class="card" style="margin-bottom:16px"><p class="mathy" style="margin:0">${esc(les.description)}</p></div>` : ''}
+    ${pdf ? `<div class="card"><h2>Tài liệu</h2>
+      <a class="btn sm ghost" target="_blank" rel="noopener" href="${esc(pdf)}">Mở PDF ở tab mới</a>
+      <div class="pdf"><iframe src="${esc(pdf)}" loading="lazy" title="Tài liệu PDF"></iframe></div></div>` : ''}`;
+  math($('.main'));
+
+  const qbox = $('#qbox');
+  let player = null, iv = null;
+  const answeredN = () => Object.keys(st.answers).length;
+  const prog = () => {
+    $('#prog').textContent = !total ? '' : st.attempt
+      ? `Đã trả lời ${answeredN()}/${total} câu · ${st.score}/${maxPts} điểm`
+      : `Bài có ${total} câu hỏi hiện trong lúc xem. Bấm phát video để bắt đầu.`;
+  };
+  prog();
+
+  const logEv = ev => {
+    if (!player || !player.getCurrentTime) return;
+    sb.from('video_events').insert({ lesson_id: lid, event: ev, video_second: Math.round(player.getCurrentTime()) }).then(() => {}, () => {});
+  };
+  async function ensureAttempt() {
+    if (st.attempt || st.starting || !total) return;
+    st.starting = true;
+    const { data, error } = await sb.rpc('start_attempt', { p_class: cid, p_lesson: lid });
+    st.starting = false;
+    if (error) { qbox.innerHTML = `<p class="err">${esc(viErr(error.message))}</p>`; return; }
+    st.attempt = data; prog();
+  }
+  function poll() {
+    if (!player || !player.getCurrentTime || st.shown || !st.attempt || st.finished) return;
+    const t = player.getCurrentTime();
+    const q = qlist.find(x => !st.answers[x.id] && (st.ended || (x.show_at_second != null && x.show_at_second <= t)));
+    if (q) showQ(q);
+  }
+  function showQ(q) {
+    st.shown = q; st.shownAt = Date.now();
+    try { player.pauseVideo(); } catch (e) {}
+    qbox.innerHTML = `<div class="card qcard">
+      <span class="tag">Câu ${qlist.indexOf(q) + 1}/${total}</span> <span class="muted small">${esc(q.points)} điểm</span>
+      <p class="mathy" style="margin:10px 0 14px">${esc(q.content)}</p>
+      <div id="qform">${qFormHtml(q)}</div>
+      <p class="err" id="qe"></p>
+      <button class="btn" id="qgo">Trả lời</button></div>`;
+    math(qbox);
+    qbox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    $('#qgo').addEventListener('click', () => submitQ(q));
+  }
+  async function submitQ(q) {
+    const resp = readResp(q, qbox);
+    if (resp === null) { $('#qe').textContent = 'Hãy chọn hoặc nhập đáp án trước khi trả lời.'; return; }
+    $('#qgo').disabled = true;
+    const secs = Math.round((Date.now() - st.shownAt) / 1000);
+    const { data, error } = await sb.rpc('submit_answer', { p_attempt: st.attempt, p_question: q.id, p_response: resp, p_time: secs });
+    if (error) { $('#qe').textContent = viErr(error.message); $('#qgo').disabled = false; return; }
+    st.answers[q.id] = { ok: data.is_correct };
+    st.score += Number(data.points || 0);
+    prog();
+    const allDone = answeredN() === total;
+    const last = allDone && st.ended;
+    qbox.innerHTML = `<div class="card qcard">
+      <div class="fb ${data.is_correct ? 'ok' : 'bad'}">${data.is_correct ? 'Chính xác! +' + esc(data.points) + ' điểm' : 'Chưa đúng.'}</div>
+      ${data.explanation ? `<p class="mathy">${esc(data.explanation)}</p>` : ''}
+      <div class="actions" style="justify-content:flex-start">
+        ${data.is_correct ? '' : '<button class="btn ghost" id="rewind">Xem lại 30 giây trước</button>'}
+        <button class="btn" id="next">${last ? 'Nộp bài và xem điểm' : 'Tiếp tục xem'}</button></div></div>`;
+    math(qbox);
+    $('#rewind')?.addEventListener('click', () => {
+      st.shown = null; qbox.innerHTML = '';
+      player.seekTo(Math.max(0, (q.show_at_second || 0) - 30), true); player.playVideo(); logEv('replay');
+    });
+    $('#next').addEventListener('click', () => {
+      st.shown = null; qbox.innerHTML = '';
+      if (last) return finish(true);
+      if (!st.ended) player.playVideo();
+    });
+  }
+  async function finish(skipConfirm) {
+    if (st.finished) return;
+    if (!st.attempt) { alert('Hãy xem video và trả lời câu hỏi trước khi nộp bài.'); return; }
+    const left = total - answeredN();
+    if (!skipConfirm && left > 0 && !confirm(`Còn ${left} câu chưa trả lời (tính 0 điểm). Vẫn nộp bài?`)) return;
+    try { player.pauseVideo(); } catch (e) {}
+    const { data, error } = await sb.rpc('finish_attempt', { p_attempt: st.attempt });
+    if (error) { qbox.innerHTML = `<p class="err">${esc(viErr(error.message))}</p>`; return; }
+    st.finished = true; st.shown = null;
+    const correct = Object.values(st.answers).filter(a => a.ok).length;
+    qbox.innerHTML = `<div class="card qcard"><h2>Kết quả</h2>
+      <p style="font-size:28px;margin:0 0 6px"><b>${esc(data.score)}</b> / ${esc(data.max_score)} điểm</p>
+      <p class="muted">Đúng ${correct}/${total} câu.</p>
+      <div class="actions" style="justify-content:flex-start"><button class="btn ghost" id="again">Học lại</button>
+        <a class="btn" href="#/">Về danh sách bài</a></div></div>`;
+    $('#again').addEventListener('click', () => learnPage(cid, lid));
+    qbox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  $('#submitAll')?.addEventListener('click', () => finish(false));
+
+  if (les.youtube_id) {
+    makePlayer('yt', les.youtube_id, s => {
+      if (s === 1) {
+        if (st.shown) { try { player.pauseVideo(); } catch (e) {} return; }   // đang có câu hỏi: không cho tua qua
+        st.ended = false; ensureAttempt(); logEv('play');
+      } else if (s === 2) logEv('pause');
+      else if (s === 0) {
+        st.ended = true; logEv('end');
+        ensureAttempt().then(() => { poll(); if (!st.shown && st.attempt && answeredN() === total) finish(true); });
+      }
+    }).then(p => { player = p; iv = setInterval(poll, 300); }).catch(() => {});
+  }
+  teardown = () => { clearInterval(iv); try { player && player.destroy(); } catch (e) {} };
 }
 </script>
 </body>
